@@ -1,0 +1,12 @@
+# This repo itself isn't a Rust crate (templates/root/ is, and ships its own
+# .gitignore as part of what gets installed into a scaffolded project) - this
+# file is for editor/OS artifacts in a local checkout of skilj-build-kit
+# itself.
+
+.idea/
+.DS_Store
+
+# Claude Code personal/local config (shared .claude/settings.json, if any,
+# stays tracked)
+.claude/settings.local.json
+.mcp.json

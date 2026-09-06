@@ -1,0 +1,6 @@
+{
+  "label": "Rust · skilj (event sourcing, Postgres, DCB)",
+  "kitSubdir": "build-kit",
+  "useShared": true,
+  "needsBoardId": true
+}

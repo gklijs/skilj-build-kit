@@ -1,0 +1,19 @@
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+skilj = "0.0.4"
+skilj-core = "0.0.4"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["chrono04", "uuid1"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
