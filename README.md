@@ -112,6 +112,13 @@ package. If skilj's own plugin API changes in a way that affects
 `tag_mappings`/`sensitive_fields`/registration, re-copy those two directories
 here and re-check every `build-*` skill's own references against the update.
 
+**Known local divergence from upstream**: `skilj/references/projection.md`'s
+own `AccountBalance` example uses `saturating_add`/`saturating_sub` instead
+of upstream's unchecked `+=`/`-=` (the latter panics or silently wraps once a
+folded balance nears `i64::MAX` — the same fix applied to this kit's own
+`templates/root/src/wallet.rs`). Re-check this against upstream, and
+re-apply the fix, the next time this file is re-copied.
+
 ## Provenance
 
 Modeled on [`ortegacmanuel/eventmodelers-elixir-fact-kit`](https://github.com/ortegacmanuel/eventmodelers-elixir-fact-kit),

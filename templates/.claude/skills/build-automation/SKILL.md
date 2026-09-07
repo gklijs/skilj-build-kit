@@ -143,6 +143,8 @@ Use `/build-webhook`.
 alongside it if the loop body is long).
 
 ```rust
+use futures::stream::{FuturesUnordered, StreamExt};   // add `futures` to Cargo.toml
+
 pub async fn run_<slice>(pool: Pool, dispatcher: Arc<dyn CommandDispatcher>, /* ... */) {
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     loop {
@@ -156,25 +158,85 @@ pub async fn run_<slice>(pool: Pool, dispatcher: Arc<dyn CommandDispatcher>, /* 
 async fn process_pending(pool: &Pool, /* ... */) -> Result<(), Error> {
     let raw = db::get_projection_state(pool, BOUNDED_CONTEXT, "<Queue>", "").await?;
     let queue: <Queue>State = raw.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or_default();
-    for item in queue.pending {
-        // see the concurrency ceiling below before firing every item at once
-        process_one(pool, item).await;
+    let mut pending = queue.pending.into_iter();
+    let mut in_flight = FuturesUnordered::new();
+
+    // Fill up to the ceiling - `room_for` is the same pure function Step 5
+    // tests directly; this is the one place it actually gates anything.
+    while room_for(in_flight.len(), IN_FLIGHT) {
+        let Some(item) = pending.next() else { break };
+        in_flight.push(process_one(pool, item));
+    }
+    while let Some(outcome) = in_flight.next().await {
+        // On success, refill the slot that just freed immediately; on
+        // failure, leave it idle until the next poll tick - an instant
+        // retry would turn a rejected call into a tight loop against
+        // someone else's API; let the poll interval be the backoff. Any
+        // item never reached this poll stays exactly where it already
+        // lives, the durable Projection queue, so a restart loses nothing.
+        if outcome.is_ok() {
+            if let Some(item) = pending.next() {
+                in_flight.push(process_one(pool, item));
+            }
+        }
     }
     Ok(())
 }
 
-async fn process_one(pool: &Pool, item: QueueItem) {
-    match call_external(&item).await {
-        Ok(response) => {
-            let payload = to_domain(response, &item);   // pure - see Step 2
-            let command_type = db::get_command_type(pool, BOUNDED_CONTEXT, "<Command>").await.unwrap();
-            let _ = db::decide_and_submit_command(
-                pool, /* dispatchers, broadcaster, cache */, &command_type,
-                &serde_json::to_string(&payload).unwrap(),
-                &format!("automation:<slice>"), None, Utc::now(), None,
-            ).await;
+/// `Err(())` only signals "don't chain another item onto this freed slot
+/// yet" to the loop above - every branch below logs its own failure via
+/// `tracing` before returning it, so nothing is silently discarded the way
+/// a bare `let _ = ...` or `.unwrap()` would.
+async fn process_one(pool: &Pool, item: QueueItem) -> Result<(), ()> {
+    let response = match call_external(&item).await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::error!("<external> failed for {item:?}: {e}");
+            return Err(());
         }
-        Err(e) => tracing::error!("<external> failed for {item:?}: {e}"),
+    };
+    let payload = to_domain(response, &item);   // pure - see Step 2
+
+    let command_type = match db::get_command_type(pool, BOUNDED_CONTEXT, "<Command>").await {
+        Ok(Some(ct)) => ct,
+        Ok(None) => {
+            tracing::error!("<Command> isn't registered - is the slice that defines it deployed?");
+            return Err(());
+        }
+        Err(e) => {
+            // A transient DB blip here must never panic this task - unlike
+            // an `.unwrap()`, this just leaves the item in the queue for
+            // the next poll to retry, exactly like any other failure below.
+            tracing::warn!("could not load <Command>'s CommandType, will retry next poll: {e}");
+            return Err(());
+        }
+    };
+
+    let payload_json = match serde_json::to_string(&payload) {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!("failed to serialize <Command> payload for {item:?}: {e}");
+            return Err(());
+        }
+    };
+
+    match db::decide_and_submit_command(
+        pool, /* dispatchers, broadcaster, cache */, &command_type,
+        &payload_json, &format!("automation:<slice>"), None, Utc::now(), None,
+    ).await {
+        Ok(SubmitCommandOutcome::Rejected { reason, .. }) => {
+            // Not a failure to retry - decide() looked at the mapped
+            // payload and said no. Re-submitting it would just be rejected
+            // again, so this item is done - successfully, with no event -
+            // but log it, since it's otherwise invisible.
+            tracing::warn!("<Command> rejected for {item:?}: {reason}");
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(e) => {
+            tracing::error!("submitting <Command> for {item:?} failed, will retry next poll: {e}");
+            Err(())
+        }
     }
 }
 ```
@@ -200,25 +262,33 @@ Non-negotiable rules:
 
 Firing every pending item at once is exactly when an undocumented rate limit
 shows up, in production, on a restart with a deep queue. Pick a ceiling and
-write down where the number came from:
+write down where the number came from — this is `IN_FLIGHT`/`room_for` in
+Step 3's own code above:
 
 ```rust
 /// One at a time - a burst of four returned 429 while a single call succeeded.
 const IN_FLIGHT: usize = 1;
 
-/// Pure - testable with no tokio runtime and no network at all.
+/// Pure - testable with no tokio runtime and no network at all. The only
+/// thing `process_pending` above actually asks before launching an item.
 fn room_for(in_flight: usize, ceiling: usize) -> bool {
     in_flight < ceiling
 }
 ```
 
-Raise `IN_FLIGHT` above 1 with a `tokio::sync::Semaphore` (acquire a permit
-before spawning each item's own `tokio::spawn`, release on completion) —
-never a second in-memory queue: an item that doesn't get a permit stays
-pending in the durable `Projection` queue itself, so a restart loses nothing.
-**On success, pull the next item immediately; on failure, don't** — chaining
-retries after a failure turns a rejected call into a tight loop against
-someone else's API; let the poll interval be the backoff.
+`process_pending`'s own `FuturesUnordered` loop is what raising `IN_FLIGHT`
+above 1 actually does here: it keeps up to `IN_FLIGHT` `process_one` calls
+running concurrently, in-process, with no `tokio::spawn`/`Arc` needed — never
+a second in-memory queue, since an item `room_for` doesn't admit this poll
+just stays pending in the durable `Projection` queue itself, so a restart
+loses nothing. **On success, pull the next item immediately; on failure,
+don't** — chaining retries after a failure turns a rejected call into a
+tight loop against someone else's API; let the poll interval be the
+backoff. (If your loop instead spawns each item onto its own task — worth
+doing once a single call's latency, not just its concurrency, needs to stop
+blocking the next poll tick — gate the spawn with a `tokio::sync::Semaphore`
+acquired before spawning and released on completion, keeping the same
+never-a-second-queue and chain-on-success-only rules.)
 
 ---
 

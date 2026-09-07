@@ -117,10 +117,16 @@ async fn webhook(
     if !valid_signature(signature, &body, &state.webhook_secret) {
         return StatusCode::UNAUTHORIZED;
     }
-    let Ok(payload) = to_domain(&body) else {
-        // Malformed body the domain can't even parse - still 200 (see below),
-        // never a 4xx that would make the provider retry the same bad body.
-        return StatusCode::OK;
+    let payload = match to_domain(&body) {
+        Ok(payload) => payload,
+        Err(e) => {
+            // Still 200 (see below) - never a 4xx that would make the
+            // provider retry the same bad body - but log it. This is the
+            // only place a persistent provider/domain shape mismatch would
+            // ever surface; a silent 200 makes it invisible forever.
+            tracing::warn!("webhook body failed to translate to the domain shape: {e}");
+            return StatusCode::OK;
+        }
     };
     // Step 4/5's submission goes here.
     StatusCode::OK
@@ -177,29 +183,44 @@ never surface the rejection reason back to the provider; log it instead.
 ## Step 4b — Submission: the EventType path
 
 ```rust
+use base64::prelude::{BASE64_STANDARD, Engine as _};   // add `base64` to Cargo.toml
+
 let token = db::get_external_event_token(&state.pool, &state.webhook_token_id)
     .await?
     .expect("minted once at boot, see server.rs");
+let source_content = match std::str::from_utf8(&body) {
+    Ok(s) => s.to_owned(),
+    // Non-UTF-8 body: base64 rather than `from_utf8_lossy`, which would
+    // silently replace invalid byte sequences with U+FFFD before storage -
+    // corrupting exactly the bytes forensics/signature re-verification
+    // would most need, in exactly the case (malformed/binary bodies) that
+    // most needs them intact. Needs the `base64` crate.
+    Err(_) => format!("base64:{}", BASE64_STANDARD.encode(&body)),
+};
 let outcome = db::create_and_insert_external_event(
     &state.pool, state.projection_dispatcher.as_ref(), &state.event_broadcaster, &state.event_cache,
     &token, serde_json::to_string(&payload)?,
-    String::from_utf8_lossy(&body).into_owned(),  // sourceContent - the raw body, for forensics
-    None,                                           // sourceContext - optional, name the specific
-                                                     // provider/integration if more than one feeds
-                                                     // this same EventType
-    dedupe,   // see below
+    source_content,   // sourceContent - the raw body, for forensics
+    None,             // sourceContext - optional, name the specific
+                       // provider/integration if more than one feeds
+                       // this same EventType
     Utc::now(), state.encryption_master_key.as_ref(),
 ).await?;
 ```
 
-**`dedupe: Option<DedupeCursor{partition_key, sequence}>`** — use only when
-the inbound source is itself partitioned/ordered (a Kafka-sourced relay, a
-provider with its own strictly-increasing per-stream sequence number) — never
-invent a `partition_key`/`sequence` pair that isn't genuinely how the source
-already orders itself. **If the provider can redeliver the same webhook and
-the source is *not* partitioned/ordered, this path has no built-in
-redelivery protection at all** — prefer Step 4a instead (its idempotency-key
-mechanism covers this case) rather than accepting silent duplicates.
+**There is no `dedupe`/`DedupeCursor` parameter on the published
+`skilj-core = "0.0.4"`'s `create_and_insert_external_event`** — it's an
+upstream feature still under "Unreleased" in the skilj repo's own CHANGELOG,
+not yet in any released crate. Don't pass one; the signature above (10
+parameters) is what actually compiles against `0.0.4`. **This means the
+EventType path has no built-in redelivery protection at all right now** — if
+the provider can redeliver the same webhook, use Step 4a instead (its
+idempotency-key mechanism covers this case) rather than accepting silent
+duplicates. Re-check this section against the crate you're actually pinned
+to before relying on it — once `dedupe` ships, it'll only ever be worth
+using for a genuinely partitioned/ordered source (a Kafka-sourced relay, a
+provider with its own strictly-increasing per-stream sequence number), never
+an invented `partition_key`/`sequence` pair.
 
 The `token` is loaded, not authenticated over HTTP — mint it once (alongside
 the `CommandToken`s already minted in `server.rs`) and remember its `id`;

@@ -45,9 +45,14 @@ impl Projection for AccountBalance {
         }
     }
     fn project(state: &mut Self::State, event: &Self::Event, _key: &str) {
+        // saturating_add/sub, not +=/-=: `amount` is only ever validated
+        // as > 0 with no upper bound (see command-type.md), so an unchecked
+        // fold panics or silently wraps once an account's running total
+        // nears i64::MAX - saturating pins it at i64::MAX instead, which
+        // `Withdraw`'s own insufficient-funds check then reads correctly.
         match event {
-            BankingEvent::MoneyDeposited(p) => state.balance += p.amount,
-            BankingEvent::MoneyWithdrawn(p) => state.balance -= p.amount,
+            BankingEvent::MoneyDeposited(p) => state.balance = state.balance.saturating_add(p.amount),
+            BankingEvent::MoneyWithdrawn(p) => state.balance = state.balance.saturating_sub(p.amount),
         }
     }
 }

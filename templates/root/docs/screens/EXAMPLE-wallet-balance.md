@@ -19,10 +19,15 @@ board export.
 // a screen would call directly, only the wire surfaces below.
 ```
 
-`GET /v1/events` or a GraphQL `projection(boundedContext: "wallet", name: "Balance", key: "<wallet_id>")`
-query (see `docs/architecture.md`'s GraphQL section for the exact query shape)
-— an `EventReadToken`/GraphQL Role grant is required either way; there is no
-unauthenticated read path.
+The GraphQL `projection(boundedContext: "wallet", name: "Balance", key: "<wallet_id>")`
+query (see `docs/architecture.md`'s GraphQL section for the exact query
+shape) — a GraphQL Role grant is required; there is no unauthenticated read
+path. **Not `GET /v1/events`**: that route returns raw, unfolded `Deposited`/
+`Withdrawn` events with no server-side folding at all — it cannot serve a
+`Projection`'s state, and re-summing those events client-side would
+reimplement `Balance::project()`'s fold outside the registered `Projection`,
+exactly what `.build-kit/CLAUDE.md`'s "every read goes through a registered
+Projection" rule rules out.
 
 ## What it returns
 

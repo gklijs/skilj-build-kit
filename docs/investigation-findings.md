@@ -9,6 +9,15 @@ Corrects and supersedes the plan in `skilj`'s own `docs/architecture.md` §41
 ("A skilj Build-Kit for eventmodelers.ai: plan, not yet built"), which was written
 before this repo existed and before a real `slice.json` schema had been found.
 
+> **Section numbers below are a point-in-time citation, not a stable
+> address.** Every `architecture.md §NN` reference in this document names the
+> section as it stood in `gklijs/SklilJ` commit `4b5b834` (see "Sources
+> read" below) — the upstream doc has since deleted and renumbered that
+> section (as of upstream commit `87db8fe`, `§41` now names the unrelated
+> `skilj-amqp` bridge). Don't follow a live upstream link by number; if you
+> need the content this document cites, check this doc's own quoted excerpts
+> first, or search the live doc by heading text instead of section number.
+
 ## Sources read
 
 - `github.com/ortegacmanuel/eventmodelers-elixir-fact-kit` (cloned fresh) — the one
@@ -199,7 +208,19 @@ POST /v1/commands/trigger       -- CommandToken         (CommandTrigger)
 error). Optional `dedupe: { partitionKey, sequence }` is **both-or-neither by
 construction** (a `DedupeRequest` sub-struct, not two loose optional fields) —
 confirms architecture.md §41's guess that a dedupe mechanism exists for a
-partitioned/ordered inbound source, and gives the exact wire shape. This is a
+partitioned/ordered inbound source, and gives the exact wire shape.
+
+> **Update, later than the rest of this investigation**: `dedupe` turned out
+> to still be "Unreleased" per the skilj CHANGELOG at the time this kit's
+> `build-webhook/SKILL.md` was implemented and compiled — the published
+> `skilj-core = "0.0.4"`'s in-process `create_and_insert_external_event`
+> (the function the *in-process* path below actually calls, as opposed to
+> this REST route) has no `dedupe` parameter yet. Whether the REST route
+> itself already accepted it ahead of the crate isn't re-verified here; treat
+> this paragraph as the schema/design intent, and `build-webhook/SKILL.md`
+> Step 4b as the currently-compiling reality.
+
+This is a
 genuinely different design from the elixir kit's own webhook pattern (HMAC-signature
 plug in front of a Phoenix controller): here the signature verification (if the
 external system signs its webhooks) still has to happen in the consuming app's own

@@ -35,11 +35,15 @@ schema, verified against real source, not guessed.
     takes a `CommandType` *record* (load it with `db::get_command_type`), not a
     `CommandToken` — no `rest_trigger_allowed` gate applies here, that gate is
     REST-specific.
-  - `skilj_core::db::create_and_insert_external_event(pool, ..., adapter: &ExternalEventToken, payload, source_content, source_context, dedupe, ...)` —
+  - `skilj_core::db::create_and_insert_external_event(pool, ..., adapter: &ExternalEventToken, payload, source_content, source_context, now, encryption_key)` —
     **does** need a real `ExternalEventToken` row (it carries which
-    `EventType` to write and the dedupe partition semantics), so an in-process
-    webhook handler still mints/loads one at boot, just never sends it over
-    HTTP to itself.
+    `EventType` to write), so an in-process webhook handler still mints/loads
+    one at boot, just never sends it over HTTP to itself. **No `dedupe`
+    parameter** — that's an upstream feature still "Unreleased" per the skilj
+    CHANGELOG, not in the published `skilj-core = "0.0.4"`; this path has no
+    built-in redelivery protection yet, so prefer
+    `decide_and_submit_command`'s `idempotency_key` when the provider can
+    redeliver. See `build-webhook/SKILL.md` Step 4b.
   - Reading a `Projection`'s folded state in-process:
     `skilj_core::db::get_projection_state(pool, bounded_context, projection_name, key) -> Option<String>`
     (a raw JSON string of `State` — deserialize it yourself).

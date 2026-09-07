@@ -19,20 +19,25 @@ NAME=my_checkout_service   # ← change this to yours (snake_case — Cargo turn
                             #   the package in snake_case from the start
                             #   avoids a mismatch between Cargo.toml's `name`
                             #   and every `my_app::` path in the code)
-grep -rl 'my_app' Cargo.toml src .claude/skills .build-kit/CLAUDE.md \
-  | xargs sed -i "s/my_app/$NAME/g"
+grep -rl 'my_app' Cargo.toml src README.md .claude/skills .build-kit/CLAUDE.md \
+  | xargs sed -i "s|my_app|${NAME//&/\\&}|g"
 ```
+
+(`|` as the `sed` delimiter since `NAME` is snake_case and never contains one,
+plus escaping `&` in the replacement text — `sed` otherwise treats a bare `&`
+there as "the whole match", silently mangling `$NAME`s that contain one.)
 
 ## 2 · Postgres
 
 ```bash
 export DATABASE_URL=postgres://user:pass@localhost:5432/$NAME
-cargo run --bin server
+BOOTSTRAP_ADMIN=1 cargo run --bin server
 ```
 
 `db::migrate` runs automatically on every boot — there's no separate
 `fact.setup`-style alias to remember, unlike some other Build-Kits' stores.
-The first boot creates the `wallet` bounded context, a fresh admin `Role`, and
+The first boot creates the `wallet` bounded context. `BOOTSTRAP_ADMIN=1` (this
+first run only — leave it unset after) additionally mints an admin `Role` and
 prints a `CommandToken` for each of `Deposit`/`Withdraw` — use one to confirm
 the server actually works before starting your first real slice:
 

@@ -18,15 +18,24 @@ against. Delete it once you have your own.
 
 ```sh
 export DATABASE_URL=postgres://user:pass@localhost:5432/my_app
-cargo run --bin server
+BOOTSTRAP_ADMIN=1 cargo run --bin server   # first run only — mints admin
+                                            # credentials and prints them once
+cargo run --bin server                     # every run after that
 ```
 
 ## Docker
 
 ```sh
 docker build -t my_app .
-docker run --env DATABASE_URL=postgres://user:pass@host:5432/my_app -p 8080:8080 my_app
+docker run --env DATABASE_URL=postgres://user:pass@host:5432/my_app --env BOOTSTRAP_ADMIN=1 \
+  -p 8080:8080 my_app
 ```
+
+`BOOTSTRAP_ADMIN=1` is a one-time flag — leave it unset on every restart after
+the first. Left on, each restart would mint a *fresh* admin `Role` and
+`CommandToken`s and print their live secrets to `docker logs`, piling up
+admin rows in the database and leaking credentials into a log stream. See
+`src/bin/server.rs`'s own doc comment for the full reasoning.
 
 The image is `FROM scratch` — no shell, no package manager, nothing besides
 the binary and a CA bundle. `docker exec ... sh` won't work; use `docker logs`

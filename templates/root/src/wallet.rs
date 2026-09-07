@@ -95,10 +95,17 @@ impl BoundedContextEvent for WalletEvent {
     }
 }
 
+/// `saturating_add`/`sub`, not `+`/`-`: `amount` is only ever validated as
+/// `> 0` (see `Deposit`/`Withdraw::decide` below), with no upper bound, so an
+/// unchecked fold panics (debug) or silently wraps to a large negative
+/// balance (release) once a wallet's running total nears `i64::MAX`.
+/// Saturating turns that into a balance pinned at `i64::MAX`, which
+/// `Withdraw::decide`'s own insufficient-funds check then reads correctly
+/// instead of off a corrupted number.
 fn balance_of(matching_events: &[WalletEvent]) -> i64 {
     matching_events.iter().fold(0i64, |balance, event| match event {
-        WalletEvent::Deposited(p) => balance + p.amount,
-        WalletEvent::Withdrawn(p) => balance - p.amount,
+        WalletEvent::Deposited(p) => balance.saturating_add(p.amount),
+        WalletEvent::Withdrawn(p) => balance.saturating_sub(p.amount),
     })
 }
 
@@ -226,9 +233,10 @@ impl Projection for Balance {
         }
     }
     fn project(state: &mut Self::State, event: &Self::Event, _key: &str) {
+        // saturating_add/sub - see balance_of's own doc comment above for why
         match event {
-            WalletEvent::Deposited(p) => state.balance += p.amount,
-            WalletEvent::Withdrawn(p) => state.balance -= p.amount,
+            WalletEvent::Deposited(p) => state.balance = state.balance.saturating_add(p.amount),
+            WalletEvent::Withdrawn(p) => state.balance = state.balance.saturating_sub(p.amount),
         }
     }
 }

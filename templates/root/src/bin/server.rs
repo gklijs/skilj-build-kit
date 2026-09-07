@@ -5,13 +5,11 @@
 //!
 //! Needs `DATABASE_URL` pointing at a real Postgres (`PORT` optionally
 //! overrides the default `8080`). Safe to re-run against the same database:
-//! the bounded context is only created if it doesn't exist yet, and each run
-//! mints its own fresh admin `Role` and `CommandToken`s rather than reusing a
-//! previous run's.
+//! the bounded context is only created if it doesn't exist yet.
 //!
-//! **The bootstrap below is a shortcut, not the intended production flow** —
-//! it seeds a `Role`/`RoleAccessMapping` directly, the way skilj's own test
-//! suite and `skilj-demo` do. A real deployment doesn't write to
+//! **The admin bootstrap below is a shortcut, not the intended production
+//! flow** — it seeds a `Role`/`RoleAccessMapping` directly, the way skilj's
+//! own test suite and `skilj-demo` do. A real deployment doesn't write to
 //! `roles`/`role_access_mappings` directly; instead a human claims the
 //! once-only bootstrap secret `Skilj::builder(...).build()` prints, to create
 //! the first superadmin, and everything past that happens over the GraphQL
@@ -19,6 +17,14 @@
 //! for the full picture, including how to wire a real `identity_provider` so
 //! GraphQL's Role-based auth (not just the REST command tokens below)
 //! actually works.
+//!
+//! **It only runs when `BOOTSTRAP_ADMIN=1` is set.** Left unguarded, this
+//! would mint a *fresh* admin `Role`/`RoleAccessMapping`/`CommandToken`s and
+//! print their live secrets to stdout on every process start — a
+//! crash-loop, a redeploy, or an autoscale event all count — leaving admin
+//! rows to accumulate forever and live credentials sitting in `docker logs`.
+//! Set `BOOTSTRAP_ADMIN=1` the *first* time only, note the printed tokens,
+//! and leave it unset for every run after that.
 //!
 //! **Where an automation slice's background worker gets added**: after
 //! `Skilj::builder(...).build()` succeeds below and before `axum::serve(...)`,
@@ -66,32 +72,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("created bounded context {bounded_context:?}");
     }
 
+    let bootstrap_admin = std::env::var("BOOTSTRAP_ADMIN").ok().as_deref() == Some("1");
     let external_subject = format!("my-app-admin-{}", generate_token_id());
-    let role = Role {
-        id: generate_token_id(),
-        external_subject: external_subject.clone(),
-        name: "my_app admin".into(),
-        superadmin: false,
-        status: RoleStatus::Active,
-        created_at: Utc::now(),
-        revoked_at: None,
-    };
-    db::insert_role(&pool, &role).await?;
 
-    let bc = db::get_bounded_context(&pool, bounded_context)
-        .await?
-        .expect("just ensured it exists above");
-    let mapping = RoleAccessMapping {
-        role: role.clone(),
-        bounded_context: bc,
-        level: AccessLevel::Admin,
-        can_read_sensitive: false,
-        scope: None,
-        status: RoleStatus::Active,
-        created_at: Utc::now(),
-        revoked_at: None,
-    };
-    db::insert_role_access_mapping(&pool, &mapping).await?;
+    if bootstrap_admin {
+        let role = Role {
+            id: generate_token_id(),
+            external_subject: external_subject.clone(),
+            name: "my_app admin".into(),
+            superadmin: false,
+            status: RoleStatus::Active,
+            created_at: Utc::now(),
+            revoked_at: None,
+        };
+        db::insert_role(&pool, &role).await?;
+
+        let bc = db::get_bounded_context(&pool, bounded_context)
+            .await?
+            .expect("just ensured it exists above");
+        let mapping = RoleAccessMapping {
+            role: role.clone(),
+            bounded_context: bc,
+            level: AccessLevel::Admin,
+            can_read_sensitive: false,
+            scope: None,
+            status: RoleStatus::Active,
+            created_at: Utc::now(),
+            revoked_at: None,
+        };
+        db::insert_role_access_mapping(&pool, &mapping).await?;
+
+        println!("\ncommand tokens (send as `authorization: Bearer <id>.<secret>`):");
+        for command_type_name in COMMAND_TYPES {
+            let command_type = db::get_command_type(&pool, bounded_context, command_type_name)
+                .await?
+                .unwrap_or_else(|| {
+                    panic!("{bounded_context}/{command_type_name} should have just been registered")
+                });
+            let token = access_control::create_command_token(
+                &mapping,
+                &command_type,
+                generate_token_id(),
+                generate_token_secret(),
+                None, // scope - unscoped, this bootstrap mints an org-wide admin token
+                Utc::now(),
+            )?;
+            db::insert_command_token(&pool, &token).await?;
+            println!("  {bounded_context}/{command_type_name}: {}.{}", token.id, token.secret);
+        }
+    } else {
+        println!(
+            "\nBOOTSTRAP_ADMIN not set — skipping admin role/token minting. \
+             Set BOOTSTRAP_ADMIN=1 on first boot only to print fresh command tokens."
+        );
+    }
 
     let (skilj, report) = my_app::register(Skilj::builder(database_url))
         .reconciliation_role(external_subject)
@@ -104,25 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Automation-slice processors get spawned here, after `skilj` exists and
     // before `axum::serve` below — see this file's own top doc comment.
-
-    println!("\ncommand tokens (send as `authorization: Bearer <id>.<secret>`):");
-    for command_type_name in COMMAND_TYPES {
-        let command_type = db::get_command_type(&pool, bounded_context, command_type_name)
-            .await?
-            .unwrap_or_else(|| {
-                panic!("{bounded_context}/{command_type_name} should have just been registered")
-            });
-        let token = access_control::create_command_token(
-            &mapping,
-            &command_type,
-            generate_token_id(),
-            generate_token_secret(),
-            None, // scope - unscoped, this bootstrap mints an org-wide admin token
-            Utc::now(),
-        )?;
-        db::insert_command_token(&pool, &token).await?;
-        println!("  {bounded_context}/{command_type_name}: {}.{}", token.id, token.secret);
-    }
 
     let rest = skilj.rest_router();
     let graphql = skilj.graphql_router().await?;

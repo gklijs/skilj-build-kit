@@ -281,6 +281,38 @@ If you need a constant `slice.json` doesn't give you, write in a comment
 **where it comes from and in what units**. An unjustified threshold is an
 invented business rule.
 
+### Idempotent retries: detecting "already happened"
+
+`decide()` is called at least twice for one real submission by design (the
+optimistic-then-locked retry, Step "What a write slice is" above) — that's
+safe because it's pure, not because it's idempotent against a *caller's*
+retry (a double-click, a network timeout that resubmits, a webhook provider
+redelivering the same body). Whether a genuine caller-level retry should be
+a safe no-op instead of a second event is a modelling decision, not
+automatic: check `specifications[]` for a scenario describing "the same
+`<Command>` submitted twice" or an equivalent comment.
+
+If the board calls for it, `matching_events` — already tag-scoped to exactly
+this command's identity — is what `decide()` checks:
+
+```rust
+fn decide(payload: &Self::Payload, matching_events: &[Self::Event]) -> CommandDecision {
+    if matching_events.iter().any(|e| matches!(e, <Context>Event::<Event>(p) if p.<field> == payload.<field>)) {
+        // Already happened - a safe no-op, not a rejection and not a
+        // second event. The caller sees the same Accepted outcome either
+        // way; re-submitting never duplicates the fact.
+        return CommandDecision::Accepted { events: vec![] };
+    }
+    // ...
+}
+```
+
+Don't add this speculatively — most commands in this kit's own worked
+example (`Deposit`/`Withdraw`) are deliberately *not* idempotent this way:
+two deposits are two real facts, not a retry of one. Add it only when
+`slice.json` actually describes the command as one where "already done" is
+a real state, not an invented one.
+
 ---
 
 ## Step 6 — Register the event enum variant
@@ -337,6 +369,27 @@ literally — don't invent values; the board's are usually measured. A
 `SPEC_ERROR` scenario asserts `CommandDecision::Rejected{kind: "...", ..}` with
 the board's own `kind`.
 
+**Also assert `tag_mappings()` directly, not just `decide()`'s outcome** —
+Step 4 called tags "the thing that matters more than anything else in this
+skill" for good reason: a wrong key or field name in `tag_mappings()` passes
+every `decide()` test above, because those hand-build `matching_events`
+directly and never go through the real tag-scoping path. It only surfaces at
+runtime, as `matching_events` silently scoped to the wrong (or no) events.
+
+```rust
+#[test]
+fn <command>_tags_on_<field_without_id_suffix>() {
+    let tags = <Command>::tag_mappings();
+    assert_eq!(tags, vec![TagMapping { key: "<name>".into(), field: "<field>_id".into() }]);
+    // and, if this element has more than one idAttribute: true field,
+    // every one of them appears here too - see .build-kit/CLAUDE.md's
+    // own multi-tag note.
+}
+```
+
+One such test per `CommandType`/`EventType` pair sharing the same tags is
+enough — it doesn't need to repeat per `specifications[]` entry.
+
 **Add a full HTTP+Postgres integration test** (`skilj-demo`'s own
 `tests/banking.rs`/`tests/courses.rs` pattern — mint a `CommandToken`, POST to
 the router, assert on the projection) only when what's actually under test is
@@ -369,6 +422,9 @@ Never commit a crate that doesn't build clean.
 - [ ] Every `pii: true` field is in `sensitive_fields()`, on its subject field
       rather than overlapping a tag.
 - [ ] Every `specifications[]` has its own test.
+- [ ] `tag_mappings()` itself has a test asserting its exact output — not
+      only `decide()`'s outcome, which hand-builds `matching_events` and
+      never exercises the real tag-scoping path.
 - [ ] `decide()` has no side effects: no `Utc::now()`, no `Uuid::new_v4()`, no
       `reqwest`, no direct DB access.
 - [ ] `try_from_event`'s match has a final `_ => None` arm.

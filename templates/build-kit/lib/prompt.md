@@ -4,7 +4,7 @@ You are an autonomous agent reacting to slice status change events on an Eventmo
 
 ## Your Loop
 
-1. Read `AGENT.md` to load accumulated learnings before doing anything else.
+1. Read `.build-kit/AGENTS.md` to load accumulated learnings before doing anything else.
 2. Read `.build-kit/tasks.json`.
 3. If `tasks.json` is empty or missing, reply with:
    <promise>IDLE</promise>
@@ -13,7 +13,7 @@ You are an autonomous agent reacting to slice status change events on an Eventmo
 5. Execute the task — see the Execution section below.
 6. After execution, remove that task from the array and write `.build-kit/tasks.json` back.
 7. Append a progress entry to `progress.txt` (create if missing).
-8. Update `AGENT.md` with any new reusable learnings discovered this iteration.
+8. Update `.build-kit/AGENTS.md` with any new reusable learnings discovered this iteration.
 9. Reply normally so the next iteration can pick up the next task.
 
 ## Execution
@@ -113,12 +113,12 @@ Learnings:
 If `.build-kit/tasks.json` is empty (`[]`) or does not exist, reply with:
 <promise>IDLE</promise>
 
-## Updating AGENT.md
+## Updating AGENTS.md
 
-After completing a task, add any **reusable** learnings to `AGENT.md` — patterns, gotchas, API quirks, or skill behaviour that future iterations should know. Only add things that are general and applicable beyond this single task. Do not duplicate what is already there.
+After completing a task, add any **reusable** learnings to `.build-kit/AGENTS.md` — patterns, gotchas, API quirks, or skill behaviour that future iterations should know. Only add things that are general and applicable beyond this single task. Do not duplicate what is already there.
 
 ## Important
 
 - Process **one task per iteration**.
-- Read `AGENT.md` first — it contains patterns from previous iterations.
+- Read `.build-kit/AGENTS.md` first — it contains patterns from previous iterations.
 - Always start with `/connect` if credentials are not yet loaded.
